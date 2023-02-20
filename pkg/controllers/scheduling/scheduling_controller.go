@@ -169,14 +169,17 @@ func NewSchedulingController(
 
 func (c *schedulingController) sync(ctx context.Context, syncCtx factory.SyncContext) error {
 	queueKey := syncCtx.QueueKey()
-	klog.V(4).Infof("Reconciling placement %q", queueKey)
+	klog.Infof("Reconciling placement %q", queueKey)
 
 	placement, err := c.getPlacement(queueKey)
+	klog.Info(placement)
 	if errors.IsNotFound(err) {
 		// no work if placement is deleted
+		klog.Infof("not found error: %v", err)
 		return nil
 	}
 	if err != nil {
+		klog.Infof("getPlacement error: %v", err)
 		return err
 	}
 
@@ -201,16 +204,19 @@ func (c *schedulingController) getPlacement(queueKey string) (*clusterapiv1beta1
 
 func (c *schedulingController) syncPlacement(ctx context.Context, syncCtx factory.SyncContext, placement *clusterapiv1beta1.Placement) error {
 	// no work if placement is deleting
+	klog.Info("placement deleting check")
 	if !placement.DeletionTimestamp.IsZero() {
 		return nil
 	}
 
 	// no work if placement has cluster.open-cluster-management.io/experimental-scheduling-disable: "true" annotation
+	klog.Info("placement annotation check")
 	if value, ok := placement.GetAnnotations()[clusterapiv1beta1.PlacementDisableAnnotation]; ok && value == "true" {
 		return nil
 	}
 
 	// get all valid clustersetbindings in the placement namespace
+	klog.Info("placement clustersetbindings check")
 	bindings, err := c.getValidManagedClusterSetBindings(placement.Namespace)
 	if err != nil {
 		return err
@@ -220,12 +226,14 @@ func (c *schedulingController) syncPlacement(ctx context.Context, syncCtx factor
 	clusterSetNames := c.getEligibleClusterSets(placement, bindings)
 
 	// get available clusters for the placement
+	klog.Info("getAvailableClusters")
 	clusters, err := c.getAvailableClusters(clusterSetNames)
 	if err != nil {
 		return err
 	}
 
 	// schedule placement with scheduler
+	klog.Info("schedule")
 	scheduleResult, status := c.scheduler.Schedule(ctx, placement, clusters)
 	misconfiguredCondition := newMisconfiguredCondition(status)
 	satisfiedCondition := newSatisfiedCondition(
@@ -239,6 +247,7 @@ func (c *schedulingController) syncPlacement(ctx context.Context, syncCtx factor
 	)
 
 	// requeue placement if requeueAfter is defined in scheduleResult
+	klog.Info("requeue")
 	if syncCtx != nil && scheduleResult.RequeueAfter() != nil {
 		key, _ := cache.MetaNamespaceKeyFunc(placement)
 		t := scheduleResult.RequeueAfter()
@@ -246,11 +255,13 @@ func (c *schedulingController) syncPlacement(ctx context.Context, syncCtx factor
 		syncCtx.Queue().AddAfter(key, *t)
 	}
 
+	klog.Info("bind")
 	if err := c.bind(ctx, placement, scheduleResult.Decisions(), scheduleResult.PrioritizerScores(), status); err != nil {
 		return err
 	}
 
 	// update placement status if necessary to signal no bindings
+	klog.Info("updateStatus")
 	if err := c.updateStatus(ctx, placement, int32(len(scheduleResult.Decisions())), misconfiguredCondition, satisfiedCondition); err != nil {
 		return err
 	}
